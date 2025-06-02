@@ -19,6 +19,10 @@ class PromptRequest(BaseModel):
     syllable_count: Optional[int] = 2
 
 
+# todo: use_syllable_filter and syllable_count overrides no longer work.
+# we now only support prompted autodetect, instructing the model to start inference
+# with a number (2, 3, or 4) to indicate the number of syllables per word.
+
 app = FastAPI()
 
 # Global model and tokenizer
@@ -156,6 +160,73 @@ class SyllableLogitsProcessor:
         return filtered_logits
 
 
+class AutoDetectingSyllableProcessor:
+    """Logits processor that auto-detects syllable filtering from first generated token."""
+
+    def __init__(
+        self, tokenizer, cmu_dict, manual_use_filter: bool = False, manual_syllable_count: int = 2
+    ):
+        self.tokenizer = tokenizer
+        self.cmu_dict = cmu_dict
+        self.manual_use_filter = manual_use_filter
+        self.manual_syllable_count = manual_syllable_count
+
+        # State for auto-detection
+        self.first_token_processed = False
+        self.syllable_processor = None
+        self.auto_detected = False
+
+    def __call__(self, tokens: mx.array, logits: mx.array) -> mx.array:
+        """Apply auto-detection and syllable filtering logic."""
+
+        if not self.first_token_processed:
+            # This is the first token generation - don't apply any filtering yet
+            # We need to see what gets generated first
+            self.first_token_processed = True
+            print("First token generation - no filtering applied")
+            return logits
+
+        # Check if we've detected the pattern from the previously generated token
+        if not self.auto_detected and len(tokens) > 0:
+            # Look at the last generated token to see if it was "2", "3", or "4"
+            last_token_id = tokens[-1].item()
+            try:
+                last_token_text = self.tokenizer.decode([last_token_id]).strip()
+                print(f"Checking last generated token: '{last_token_text}'")
+
+                if last_token_text in ["2", "3", "4"]:
+                    # Auto-detection triggered!
+                    auto_syllable_count = int(last_token_text)
+                    print(f"Auto-detected syllable filtering: {auto_syllable_count} syllables")
+                    self.syllable_processor = SyllableLogitsProcessor(
+                        self.tokenizer, self.cmu_dict, auto_syllable_count
+                    )
+                    self.auto_detected = True
+                elif self.manual_use_filter:
+                    # No auto-detection, but manual filtering was requested
+                    print(
+                        f"Using manual syllable filtering: {self.manual_syllable_count} syllables"
+                    )
+                    self.syllable_processor = SyllableLogitsProcessor(
+                        self.tokenizer, self.cmu_dict, self.manual_syllable_count
+                    )
+                else:
+                    # No filtering
+                    print("No syllable filtering applied")
+
+                self.auto_detected = True  # Mark as processed either way
+
+            except Exception as e:
+                print(f"Error checking last token: {e}")
+                self.auto_detected = True  # Prevent infinite retries
+
+        # Apply syllable filtering if we have a processor
+        if self.syllable_processor is not None:
+            return self.syllable_processor(tokens, logits)
+        else:
+            return logits
+
+
 # Updated server code modifications:
 def load_model(model_name: str = "mlx-community/gemma-3-4b-it-8bit"):
     """Load the model and tokenizer."""
@@ -183,13 +254,20 @@ def get_syllable_processor(syllable_count: int):
     return syllable_processors[syllable_count]
 
 
+def get_auto_detecting_processor(manual_use_filter: bool = False, manual_syllable_count: int = 2):
+    """Create a new auto-detecting processor for each generation request."""
+    return AutoDetectingSyllableProcessor(
+        tokenizer, cmu_dict, manual_use_filter, manual_syllable_count
+    )
+
+
 async def inference_generator(
     prompt: list,
     max_tokens: int,
     use_syllable_filter: bool = False,
     syllable_count: int = 2,
 ):
-    """Generate tokens using mlx_lm.stream_generate with KV caching."""
+    """Generate tokens with auto-detection and full KV caching."""
 
     # Apply chat template
     messages = prompt
@@ -199,19 +277,18 @@ async def inference_generator(
     )
     print(f"Formatted prompt: {formatted_prompt}")
 
-    # Create logits processors list
-    logits_processors = []
-    if use_syllable_filter:
-        processor = get_syllable_processor(syllable_count)
-        logits_processors.append(processor)
+    # Create the auto-detecting logits processor
+    auto_processor = get_auto_detecting_processor(use_syllable_filter, syllable_count)
 
-    # Use stream_generate which handles KV caching automatically
+    print("Starting generation with auto-detection...")
+
+    # Single stream_generate call with full KV caching
     for response in mlx_lm.stream_generate(
         model=model,
         tokenizer=tokenizer,
         prompt=formatted_prompt,
         max_tokens=max_tokens,
-        logits_processors=logits_processors if logits_processors else None,
+        logits_processors=[auto_processor],
     ):
         yield response.text
         # Allow other async tasks to run

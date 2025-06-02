@@ -82,7 +82,12 @@ async def main(args: SessionArguments):
     messages = [
         {
             "role": "user",
-            "content": 'Please say the exact phrase "I am ready". Say it now.',
+            "content": """You are a helpful voice assistant. All communication is audio, so silently correct for obvious transcription errors. Keep your responses brief and use only plain text.
+
+            If the user asks you to respond using words with a specific number of syllables, begin your response with the numeral 2. Then continue as normal.
+            
+            Please say the exact phrase "I am ready". Say it now.
+""",
         }
     ]
 

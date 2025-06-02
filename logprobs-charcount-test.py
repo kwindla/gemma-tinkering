@@ -7,7 +7,7 @@
 from mlx_lm import load
 import mlx.core as mx
 import cmudict
-
+import time
 
 # Initialize CMU dictionary for syllable counting
 cmu_dict = cmudict.dict()
@@ -34,7 +34,7 @@ def select_token(tokenizer, current_buffer, sorted_tokens):
         return None
 
     str = tokenizer.decode([int(sorted_tokens[0])])
-    # print(f"token: {str!r}")
+    print(f"{time.time()}: {str!r}")
     stripped = str.strip()
 
     # select our prompted eol token or any whitespace tokens
@@ -52,9 +52,9 @@ def select_token(tokenizer, current_buffer, sorted_tokens):
 
 
 def main():
-    # model, tokenizer = load("mlx-community/gemma-3-4b-it-8bit")
+    model, tokenizer = load("mlx-community/gemma-3-4b-it-8bit")
     # model, tokenizer = load("mlx-community/gemma-3-12b-it-4bit")
-    model, tokenizer = load("mlx-community/gemma-3-12b-it-8bit")
+    # model, tokenizer = load("mlx-community/gemma-3-12b-it-8bit")
     # model, tokenizer = load("mlx-community/gemma-3-27b-it-8bit")
 
     def gen_single(prompt):

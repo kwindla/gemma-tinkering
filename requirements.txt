@@ -1,2 +1,8 @@
 mlx-lm
+mlx-whisper
 cmudict
+python-dotenv
+fastapi
+uvicorn
+pipecat-ai[silero,webrtc,daily,openai,google,cartesia]
+pipecatcloud

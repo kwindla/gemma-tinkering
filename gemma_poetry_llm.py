@@ -3,7 +3,6 @@ from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.utils.tracing.service_decorators import traced_llm
 from pipecat.frames.frames import LLMTextFrame
-
 import aiohttp
 
 from loguru import logger
@@ -38,7 +37,7 @@ class GemmaPoetryLLMService(OpenAILLMService):
 
         # Prepare the request payload
         payload = {
-            "messages": messages,  # Send full messages array
+            "prompt": messages,
             "max_tokens": max_tokens,
             "use_syllable_filter": self.use_syllable_filter,
             "syllable_count": self.min_syllables,

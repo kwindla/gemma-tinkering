@@ -13,7 +13,7 @@ import cmudict
 
 
 class PromptRequest(BaseModel):
-    prompt: str
+    prompt: list
     max_tokens: Optional[int] = 512
     use_syllable_filter: Optional[bool] = False
     syllable_count: Optional[int] = 2
@@ -87,15 +87,17 @@ def syllable_logits_processor(tokens: mx.array, logits: mx.array, syllable_count
 
 
 async def inference_generator(
-    prompt: str, max_tokens: int, use_syllable_filter: bool = False, syllable_count: int = 2
+    prompt: list, max_tokens: int, use_syllable_filter: bool = False, syllable_count: int = 2
 ):
     """Generate tokens using mlx_lm.stream_generate with KV caching."""
 
     # Apply chat template
-    messages = [{"role": "user", "content": prompt}]
+    messages = prompt
+    print(f"Prompt: {messages}")
     formatted_prompt = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
+    print(f"Formatted prompt: {formatted_prompt}")
 
     # Create logits processors list
     logits_processors = []

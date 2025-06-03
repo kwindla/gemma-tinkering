@@ -93,10 +93,9 @@ class SyllableLogitsProcessor:
                         valid_token_list.append(True)
                         continue
 
+                    # Always allow tokens specifically listed here plus all whitespace tokens (the strip() plus len==0)
                     token_text = self.tokenizer.decode([token_id]).strip()
-
-                    # Always allow special tokens and whitespace
-                    if token_text in ["", "/", " "] or len(token_text) == 0:
+                    if token_text in [".", ",", "!", "?", "/"] or len(token_text) == 0:
                         valid_token_list.append(True)
                         continue
 
@@ -157,6 +156,25 @@ class SyllableLogitsProcessor:
         if mx.all(mx.isinf(filtered_logits)):
             return top_k_logits_processor(tokens, logits, k=20)
 
+        # ADD DEBUGGING HERE - before returning filtered logits
+        try:
+            # Handle both batched and unbatched logits
+            if len(filtered_logits.shape) == 2:
+                # Batched: (batch_size, vocab_size)
+                most_likely_token_id = mx.argmax(filtered_logits[0]).item()
+            else:
+                # Unbatched: (vocab_size,)
+                most_likely_token_id = mx.argmax(filtered_logits).item()
+
+            most_likely_unfiltered = mx.argmax(logits).item()
+            most_likely_text = self.tokenizer.decode([most_likely_token_id])
+            most_likely_unfiltered_text = self.tokenizer.decode([most_likely_unfiltered])
+            print(
+                f"Most likely token before and after syllable filtering: '{repr(most_likely_unfiltered_text)}' (ID: {most_likely_unfiltered}) -> '{repr(most_likely_text)}' (ID: {most_likely_token_id})"
+            )
+        except Exception as e:
+            print(f"Error decoding most likely token: {e}")
+
         return filtered_logits
 
 
@@ -172,59 +190,121 @@ class AutoDetectingSyllableProcessor:
         self.manual_syllable_count = manual_syllable_count
 
         # State for auto-detection
-        self.first_token_processed = False
+        self.generation_step = 0
         self.syllable_processor = None
         self.auto_detected = False
+
+        # Find useful token IDs for replacing the number token
+        self.space_token_id = None
+        self.empty_token_id = None
+        self._find_minimal_tokens()
+
+    def _find_minimal_tokens(self):
+        """Find token IDs that can be used to replace the number token."""
+        try:
+            # Try to find a space token
+            space_tokens = self.tokenizer.encode("2", add_special_tokens=False)
+            if len(space_tokens) > 0:
+                self.space_token_id = space_tokens[0]
+                print(f"Found space token ID: {self.space_token_id}")
+
+            # Try to find other minimal tokens to replace the number
+            for candidate in [" ", "\t", "\n"]:
+                try:
+                    tokens = self.tokenizer.encode(candidate, add_special_tokens=False)
+                    if len(tokens) == 1:
+                        self.empty_token_id = tokens[0]
+                        print(f"Found minimal token ID for '{candidate}': {self.empty_token_id}")
+                        break
+                except:
+                    continue
+
+        except Exception as e:
+            print(f"Error finding minimal tokens: {e}")
 
     def __call__(self, tokens: mx.array, logits: mx.array) -> mx.array:
         """Apply auto-detection and syllable filtering logic."""
 
-        if not self.first_token_processed:
-            # This is the first token generation - don't apply any filtering yet
-            # We need to see what gets generated first
-            self.first_token_processed = True
-            print("First token generation - no filtering applied")
-            return logits
+        self.generation_step += 1
 
-        # Check if we've detected the pattern from the previously generated token
-        if not self.auto_detected and len(tokens) > 0:
-            # Look at the last generated token to see if it was "2", "3", or "4"
-            last_token_id = tokens[-1].item()
+        if self.generation_step == 1:
+            # First token generation - examine what would be generated
+            print("Processing first token for auto-detection...")
+
+            # Handle both batched and unbatched logits
+            if len(logits.shape) == 2:
+                # Batched: (batch_size, vocab_size)
+                most_likely_token_id = mx.argmax(logits[0]).item()
+            else:
+                # Unbatched: (vocab_size,)
+                most_likely_token_id = mx.argmax(logits).item()
+
             try:
-                last_token_text = self.tokenizer.decode([last_token_id]).strip()
-                print(f"Checking last generated token: '{last_token_text}'")
+                most_likely_text = self.tokenizer.decode([most_likely_token_id]).strip()
+                print(f"Most likely first token: '{most_likely_text}' (ID: {most_likely_token_id})")
 
-                if last_token_text in ["2", "3", "4"]:
-                    # Auto-detection triggered!
-                    auto_syllable_count = int(last_token_text)
+                if most_likely_text in ["2", "3", "4"]:
+                    # Auto-detection triggered! Instead of generating the number,
+                    # generate a minimal token and enable syllable filtering
+                    auto_syllable_count = int(most_likely_text)
                     print(f"Auto-detected syllable filtering: {auto_syllable_count} syllables")
+
+                    # Set up syllable processor for future tokens
                     self.syllable_processor = SyllableLogitsProcessor(
                         self.tokenizer, self.cmu_dict, auto_syllable_count
                     )
                     self.auto_detected = True
-                elif self.manual_use_filter:
-                    # No auto-detection, but manual filtering was requested
-                    print(
-                        f"Using manual syllable filtering: {self.manual_syllable_count} syllables"
-                    )
-                    self.syllable_processor = SyllableLogitsProcessor(
-                        self.tokenizer, self.cmu_dict, self.manual_syllable_count
-                    )
-                else:
-                    # No filtering
-                    print("No syllable filtering applied")
 
-                self.auto_detected = True  # Mark as processed either way
+                    # Force a minimal token instead of the number
+                    consumed_logits = mx.full(logits.shape, -mx.inf, dtype=logits.dtype)
+
+                    # Find preferred minimal token
+                    preferred_token_id = None
+                    if self.space_token_id is not None:
+                        preferred_token_id = self.space_token_id
+                    elif self.empty_token_id is not None:
+                        preferred_token_id = self.empty_token_id
+                    else:
+                        # Fallback: use a low token ID that's likely to be minimal
+                        preferred_token_id = 1
+
+                    # Make the preferred token very likely
+                    vocab_size = consumed_logits.shape[-1]
+                    if preferred_token_id < vocab_size:
+                        if len(consumed_logits.shape) == 2:
+                            # Batched logits
+                            consumed_logits[0, preferred_token_id] = 10.0
+                        else:
+                            # Unbatched logits
+                            consumed_logits[preferred_token_id] = 10.0
+                        print(f"Replacing number token with minimal token ID {preferred_token_id}")
+
+                    return consumed_logits
+                else:
+                    # No auto-detection, check manual settings
+                    if self.manual_use_filter:
+                        print(
+                            f"Using manual syllable filtering: {self.manual_syllable_count} syllables"
+                        )
+                        self.syllable_processor = SyllableLogitsProcessor(
+                            self.tokenizer, self.cmu_dict, self.manual_syllable_count
+                        )
+                    else:
+                        print("No syllable filtering applied")
+
+                    print("Returning logits")
+                    return logits
 
             except Exception as e:
-                print(f"Error checking last token: {e}")
-                self.auto_detected = True  # Prevent infinite retries
+                print(f"Error processing first token: {e}")
+                return logits
 
-        # Apply syllable filtering if we have a processor
-        if self.syllable_processor is not None:
-            return self.syllable_processor(tokens, logits)
         else:
-            return logits
+            # Subsequent tokens - apply syllable filtering if active
+            if self.syllable_processor is not None:
+                return self.syllable_processor(tokens, logits)
+            else:
+                return logits
 
 
 # Updated server code modifications:

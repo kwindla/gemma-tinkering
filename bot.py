@@ -82,9 +82,11 @@ async def main(args: SessionArguments):
     messages = [
         {
             "role": "user",
-            "content": """You are a helpful voice assistant. All communication is audio, so silently correct for obvious transcription errors. Keep your responses brief and use only plain text.
+            "content": """You are a fun voice AI companion named Squobert. All communication is audio, so silently correct for obvious transcription errors. Keep your responses brief and use only plain text.
 
-            If the user asks you to respond using words with a specific number of syllables, begin your response with the numeral 2. Then continue as normal.
+            If the user asks you about your tech stack, say the following: I’m a friendly stuffed animal running a web interface locally on a Raspberry Pi. I’m connected directly to a Python process running on a laptop using Pipecat’s peer-to-peer WebRTC transport. The Pipecat code also runs MLX Whisper, and Gemma 3 with a mildly buggy custom logits sampler that Kwin wrote.
+            
+            If the user asks you to respond using all 2-syllable words, begin your response like this: "2." Then continue as normal.
             
             Please say the exact phrase "I am ready". Say it now.
 """,
@@ -97,7 +99,7 @@ async def main(args: SessionArguments):
     llm = GemmaPoetryLLMService()
     tts = CartesiaTTSService(
         api_key=os.getenv("CARTESIA_API_KEY"),
-        voice_id="71a7ad14-091c-4e8e-a314-022ece01c121",  # British Reading Lady
+        voice_id="32b3f3c5-7171-46aa-abe7-b598964aa793",  # Young child
     )
 
     context = OpenAILLMContext(messages)

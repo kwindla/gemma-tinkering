@@ -1,8 +1,9 @@
+pipecat-ai[silero,webrtc,daily,openai,google,cartesia]==0.0.69
 mlx-lm
+mlx-audio
 mlx-whisper
 cmudict
 python-dotenv
 fastapi
 uvicorn
-pipecat-ai[silero,webrtc,daily,openai,google,cartesia]
 pipecatcloud

@@ -8,6 +8,32 @@ import aiohttp
 from loguru import logger
 
 
+def add_message(self, message):
+    try:
+        if self.messages:
+            # Gemma requires that roles alternate. If this message's role is the same as the
+            # last message, we should add this message's content to the last message.
+            if self.messages[-1]["role"] == message["role"]:
+                # if the last message has just a content string, convert it to a list
+                # in the proper format
+                if isinstance(self.messages[-1]["content"], str):
+                    self.messages[-1]["content"] = [
+                        {"type": "text", "text": self.messages[-1]["content"]}
+                    ]
+                # if this message has just a content string, convert it to a list
+                # in the proper format
+                if isinstance(message["content"], str):
+                    message["content"] = [{"type": "text", "text": message["content"]}]
+                # append the content of this message to the last message
+                self.messages[-1]["content"].extend(message["content"])
+            else:
+                self.messages.append(message)
+        else:
+            self.messages.append(message)
+    except Exception as e:
+        logger.error(f"Error adding message: {e}")
+OpenAILLMContext.add_message = add_message
+
 class GemmaPoetryLLMService(OpenAILLMService):
     def __init__(
         self,

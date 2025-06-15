@@ -12,7 +12,18 @@ DAILY_TOKEN=... # hackathon room access
 
 # run the inference server
 
-python gemma_server.py --model mlx-community/gemma-3-12b-it-8bit
+python -m gemma_server --model mlx-community/gemma-3-12b-it-8bit
+
+# run inference from the command line
+
+python -m gemma_server --model mlx-community/gemma-3-12b-it-8bit \
+    --prompt "Tell me a haiku" --max-tokens 20
+
+# generate using curl
+
+curl -X POST http://localhost:8000/generate \
+    -H 'Content-Type: application/json' \
+    -d '{"prompt": [{"role": "user", "content": "Tell me a haiku"}], "max_tokens": 20}'
 
 # run the bot launcher
 

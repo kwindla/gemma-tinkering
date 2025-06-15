@@ -9,6 +9,8 @@ from pydantic import BaseModel
 
 from .inference import inference_generator, load_model, model
 
+DEFAULT_MODEL = "mlx-community/gemma-3-4b-it-8bit"
+
 app = FastAPI()
 
 
@@ -43,6 +45,13 @@ async def health():
     return {"status": "healthy", "model_loaded": model is not None}
 
 
-def init(model_name: str):
-    """Load the model before starting the server."""
-    load_model(model_name)
+@app.on_event("startup")
+async def _startup() -> None:
+    """Initialize the model when the app starts."""
+    init()
+
+
+def init(model_name: str = DEFAULT_MODEL):
+    """Load the model before starting the server if it's not already loaded."""
+    if model is None:
+        load_model(model_name)

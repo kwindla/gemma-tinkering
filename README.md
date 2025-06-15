@@ -31,3 +31,24 @@ python local-dev-server.py
 
 # then connect from any basic RTVI client
 
+# notes
+
+mlx-community/gemma-3-4b-it-8bit produces a four-syllable word for this generation request:
+
+```
+curl -X POST http://localhost:8000/generate \
+    -H 'Content-Type: application/json' \
+    -d '{"prompt": [{"role": "user", "content": "Write a four-line poem about computer programming."}], "use_syllable_filter":true, "syllable_count":2}'
+```
+
+output:
+
+```
+Within circuits, logic resides,
+Commands crafted, neatly applied.
+Building software, pixelated sprites,
+Coding futures, shining, brilliant, delights.
+```
+
+Notice "pixelated". Why? Because pixelated is actually two tokens. Our logit sampler properly limits the output to two-syllable tokens, but then we concate "pixel" and "ated" into a single, english-language, word!
+

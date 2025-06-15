@@ -2,8 +2,8 @@ import argparse
 import asyncio
 import uvicorn
 
-from .app import app, init
-from .inference import inference_generator
+from .app import app
+from .inference import inference_generator, load_model
 
 
 def main():
@@ -19,9 +19,7 @@ def main():
     parser.add_argument(
         "--host", type=str, default="0.0.0.0", help="Host to bind to (default: 0.0.0.0)"
     )
-    parser.add_argument(
-        "--port", type=int, default=8000, help="Port to bind to (default: 8000)"
-    )
+    parser.add_argument("--port", type=int, default=8000, help="Port to bind to (default: 8000)")
     parser.add_argument(
         "--prompt",
         type=str,
@@ -46,10 +44,10 @@ def main():
     )
 
     args = parser.parse_args()
-
-    init(args.model)
+    load_model(args.model)
 
     if args.prompt:
+
         async def run_cli():
             prompt = [{"role": "user", "content": args.prompt}]
             async for token in inference_generator(

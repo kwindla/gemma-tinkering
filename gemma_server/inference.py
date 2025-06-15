@@ -4,7 +4,6 @@ import asyncio
 from typing import List
 
 import mlx_lm
-import mlx.core as mx
 import cmudict
 
 from .logits_processors import SyllableLogitsProcessor
@@ -31,7 +30,9 @@ def load_model(model_name: str = "mlx-community/gemma-3-4b-it-8bit"):
 def get_syllable_processor(syllable_count: int):
     """Get or create a syllable processor for the given syllable count."""
     if syllable_count not in syllable_processors:
-        syllable_processors[syllable_count] = SyllableLogitsProcessor(tokenizer, cmu_dict, syllable_count)
+        syllable_processors[syllable_count] = SyllableLogitsProcessor(
+            tokenizer, cmu_dict, syllable_count
+        )
     return syllable_processors[syllable_count]
 
 

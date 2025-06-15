@@ -19,9 +19,9 @@ class PromptRequest(BaseModel):
     syllable_count: Optional[int] = 2
 
 
-# todo: use_syllable_filter and syllable_count overrides no longer work.
-# we now only support prompted autodetect, instructing the model to start inference
-# with a number (2, 3, or 4) to indicate the number of syllables per word.
+# use_syllable_filter and syllable_count can be passed with the request to
+# explicitly constrain generated tokens to words with the given number of
+# syllables.
 
 app = FastAPI()
 
@@ -29,20 +29,6 @@ app = FastAPI()
 model = None
 tokenizer = None
 cmu_dict = None
-
-
-def syllable_logits_processor(tokens: mx.array, logits: mx.array, syllable_count: int) -> mx.array:
-    """
-    Logits processor that filters tokens by syllable count.
-    This version works with MLX's tensor operations.
-    """
-    # For MLX compatibility, we need to precompute which tokens are valid
-    # and store them in a way that doesn't require Python loops during inference
-
-    # Simple approach: use a pre-computed mask or fall back to top-k filtering
-    # since syllable filtering requires tokenizer.decode() which breaks MLX graphs
-
-    return top_k_logits_processor(tokens, logits, k=50)
 
 
 def top_k_logits_processor(tokens: mx.array, logits: mx.array, k: int = 50) -> mx.array:
@@ -62,252 +48,69 @@ def top_k_logits_processor(tokens: mx.array, logits: mx.array, k: int = 50) -> m
 
 # Alternative approach: Dynamic syllable mapping that works with actual vocab size
 class SyllableLogitsProcessor:
-    """Class-based processor that dynamically builds syllable mappings."""
+    """Filter logits so only tokens with the target syllable count are allowed."""
 
     def __init__(self, tokenizer, cmu_dict, target_syllable_count: int):
         self.tokenizer = tokenizer
         self.cmu_dict = cmu_dict
         self.target_syllable_count = target_syllable_count
-        self.valid_token_mask = None  # Will be built on first call
-
-    def _build_syllable_mask(self, vocab_size: int):
-        """Build syllable mask based on actual vocabulary size."""
-        # Build mask as a Python list first, then convert to MLX array
-        valid_token_list = []
-
-        # Get EOS token ID for special handling
-        eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
-
-        # Only check up to the tokenizer's known vocabulary size
-        tokenizer_vocab_size = len(self.tokenizer.get_vocab())
-        max_token_to_check = min(vocab_size, tokenizer_vocab_size)
-
-        print(f"EOS token ID: {eos_token_id}")
-
-        # This runs once during first inference call
-        for token_id in range(vocab_size):
-            if token_id < max_token_to_check:
-                try:
-                    # Always allow EOS token
-                    if eos_token_id is not None and token_id == eos_token_id:
-                        valid_token_list.append(True)
-                        continue
-
-                    # Always allow tokens specifically listed here plus all whitespace tokens (the strip() plus len==0)
-                    token_text = self.tokenizer.decode([token_id]).strip()
-                    if token_text in [".", ",", "!", "?", "/"] or len(token_text) == 0:
-                        valid_token_list.append(True)
-                        continue
-
-                    # Skip single non-alphabetic characters
-                    if len(token_text) == 1 and not token_text.isalpha():
-                        valid_token_list.append(False)
-                        continue
-
-                    # Check syllable count
-                    if self.count_syllables(token_text) == self.target_syllable_count:
-                        valid_token_list.append(True)
-                    else:
-                        valid_token_list.append(False)
-
-                except Exception:
-                    # Skip problematic tokens
-                    valid_token_list.append(False)
-            else:
-                # Tokens beyond tokenizer vocabulary - default to False
-                valid_token_list.append(False)
-
-        # Convert to MLX array
-        return mx.array(valid_token_list)
+        self.valid_token_mask = None
 
     def count_syllables(self, word: str) -> int:
-        """Count syllables in a word using CMU dictionary."""
         word_lower = word.lower()
         if word_lower in self.cmu_dict:
             return len([ph for ph in self.cmu_dict[word_lower][0] if ph[-1].isdigit()])
-        # Fallback: count vowels as rough approximation
         vowels = "aeiouAEIOU"
         return sum(1 for char in word if char in vowels)
 
+    def _build_mask(self, vocab_size: int) -> mx.array:
+        mask = []
+        eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
+        tokenizer_vocab_size = len(self.tokenizer.get_vocab())
+        max_token = min(vocab_size, tokenizer_vocab_size)
+
+        for token_id in range(vocab_size):
+            if token_id >= max_token:
+                mask.append(False)
+                continue
+            try:
+                if eos_token_id is not None and token_id == eos_token_id:
+                    mask.append(True)
+                    continue
+
+                token_text = self.tokenizer.decode([token_id]).strip()
+
+                if token_text in [".", ",", "!", "?", "/"] or len(token_text) == 0:
+                    mask.append(True)
+                    continue
+
+                if len(token_text) == 1 and not token_text.isalpha():
+                    mask.append(False)
+                    continue
+
+                if self.count_syllables(token_text) == self.target_syllable_count:
+                    mask.append(True)
+                else:
+                    mask.append(False)
+            except Exception:
+                mask.append(False)
+
+        return mx.array(mask)
+
     def __call__(self, tokens: mx.array, logits: mx.array) -> mx.array:
-        """Apply syllable filtering using dynamically-built mask."""
-        # Build mask on first call based on actual logits shape
-        if self.valid_token_mask is None:
-            vocab_size = logits.shape[-1]
-            print(f"Building syllable mask for vocab size: {vocab_size}")
-            self.valid_token_mask = self._build_syllable_mask(vocab_size)
+        if self.valid_token_mask is None or self.valid_token_mask.shape[0] != logits.shape[-1]:
+            self.valid_token_mask = self._build_mask(logits.shape[-1])
 
-        # Ensure mask matches logits shape
-        if self.valid_token_mask.shape[0] != logits.shape[-1]:
-            print(
-                f"Mask size mismatch: {self.valid_token_mask.shape[0]} vs {logits.shape[-1]}, rebuilding..."
-            )
-            vocab_size = logits.shape[-1]
-            self.valid_token_mask = self._build_syllable_mask(vocab_size)
+        filtered_logits = mx.where(self.valid_token_mask[None, :], logits, -mx.inf)
 
-        # Apply the mask
-        filtered_logits = mx.where(
-            self.valid_token_mask[None, :],  # Broadcast across batch dimension
-            logits,
-            -mx.inf,
-        )
-
-        # If no tokens are valid (all -inf), fall back to top-k
         if mx.all(mx.isinf(filtered_logits)):
-            return top_k_logits_processor(tokens, logits, k=20)
-
-        # ADD DEBUGGING HERE - before returning filtered logits
-        try:
-            # Handle both batched and unbatched logits
-            if len(filtered_logits.shape) == 2:
-                # Batched: (batch_size, vocab_size)
-                most_likely_token_id = mx.argmax(filtered_logits[0]).item()
-            else:
-                # Unbatched: (vocab_size,)
-                most_likely_token_id = mx.argmax(filtered_logits).item()
-
-            most_likely_unfiltered = mx.argmax(logits).item()
-            most_likely_text = self.tokenizer.decode([most_likely_token_id])
-            most_likely_unfiltered_text = self.tokenizer.decode([most_likely_unfiltered])
-            print(
-                f"Most likely token before and after syllable filtering: '{repr(most_likely_unfiltered_text)}' (ID: {most_likely_unfiltered}) -> '{repr(most_likely_text)}' (ID: {most_likely_token_id})"
-            )
-        except Exception as e:
-            print(f"Error decoding most likely token: {e}")
+            return logits
 
         return filtered_logits
 
 
-class AutoDetectingSyllableProcessor:
-    """Logits processor that auto-detects syllable filtering from first generated token."""
-
-    def __init__(
-        self, tokenizer, cmu_dict, manual_use_filter: bool = False, manual_syllable_count: int = 2
-    ):
-        self.tokenizer = tokenizer
-        self.cmu_dict = cmu_dict
-        self.manual_use_filter = manual_use_filter
-        self.manual_syllable_count = manual_syllable_count
-
-        # State for auto-detection
-        self.generation_step = 0
-        self.syllable_processor = None
-        self.auto_detected = False
-
-        # Find useful token IDs for replacing the number token
-        self.space_token_id = None
-        self.empty_token_id = None
-        self._find_minimal_tokens()
-
-    def _find_minimal_tokens(self):
-        """Find token IDs that can be used to replace the number token."""
-        try:
-            # Try to find a space token
-            space_tokens = self.tokenizer.encode("2", add_special_tokens=False)
-            if len(space_tokens) > 0:
-                self.space_token_id = space_tokens[0]
-                print(f"Found space token ID: {self.space_token_id}")
-
-            # Try to find other minimal tokens to replace the number
-            for candidate in [" ", "\t", "\n"]:
-                try:
-                    tokens = self.tokenizer.encode(candidate, add_special_tokens=False)
-                    if len(tokens) == 1:
-                        self.empty_token_id = tokens[0]
-                        print(f"Found minimal token ID for '{candidate}': {self.empty_token_id}")
-                        break
-                except:
-                    continue
-
-        except Exception as e:
-            print(f"Error finding minimal tokens: {e}")
-
-    def __call__(self, tokens: mx.array, logits: mx.array) -> mx.array:
-        """Apply auto-detection and syllable filtering logic."""
-
-        self.generation_step += 1
-
-        if self.generation_step == 1:
-            # First token generation - examine what would be generated
-            print("Processing first token for auto-detection...")
-
-            # Handle both batched and unbatched logits
-            if len(logits.shape) == 2:
-                # Batched: (batch_size, vocab_size)
-                most_likely_token_id = mx.argmax(logits[0]).item()
-            else:
-                # Unbatched: (vocab_size,)
-                most_likely_token_id = mx.argmax(logits).item()
-
-            try:
-                most_likely_text = self.tokenizer.decode([most_likely_token_id]).strip()
-                print(f"Most likely first token: '{most_likely_text}' (ID: {most_likely_token_id})")
-
-                if most_likely_text in ["2", "3", "4"]:
-                    # Auto-detection triggered! Instead of generating the number,
-                    # generate a minimal token and enable syllable filtering
-                    auto_syllable_count = int(most_likely_text)
-                    print(f"Auto-detected syllable filtering: {auto_syllable_count} syllables")
-
-                    # Set up syllable processor for future tokens
-                    self.syllable_processor = SyllableLogitsProcessor(
-                        self.tokenizer, self.cmu_dict, auto_syllable_count
-                    )
-                    self.auto_detected = True
-
-                    # Force a minimal token instead of the number
-                    consumed_logits = mx.full(logits.shape, -mx.inf, dtype=logits.dtype)
-
-                    # Find preferred minimal token
-                    preferred_token_id = None
-                    if self.space_token_id is not None:
-                        preferred_token_id = self.space_token_id
-                    elif self.empty_token_id is not None:
-                        preferred_token_id = self.empty_token_id
-                    else:
-                        # Fallback: use a low token ID that's likely to be minimal
-                        preferred_token_id = 1
-
-                    # Make the preferred token very likely
-                    vocab_size = consumed_logits.shape[-1]
-                    if preferred_token_id < vocab_size:
-                        if len(consumed_logits.shape) == 2:
-                            # Batched logits
-                            consumed_logits[0, preferred_token_id] = 10.0
-                        else:
-                            # Unbatched logits
-                            consumed_logits[preferred_token_id] = 10.0
-                        print(f"Replacing number token with minimal token ID {preferred_token_id}")
-
-                    return consumed_logits
-                else:
-                    # No auto-detection, check manual settings
-                    if self.manual_use_filter:
-                        print(
-                            f"Using manual syllable filtering: {self.manual_syllable_count} syllables"
-                        )
-                        self.syllable_processor = SyllableLogitsProcessor(
-                            self.tokenizer, self.cmu_dict, self.manual_syllable_count
-                        )
-                    else:
-                        print("No syllable filtering applied")
-
-                    print("Returning logits")
-                    return logits
-
-            except Exception as e:
-                print(f"Error processing first token: {e}")
-                return logits
-
-        else:
-            # Subsequent tokens - apply syllable filtering if active
-            if self.syllable_processor is not None:
-                return self.syllable_processor(tokens, logits)
-            else:
-                return logits
 
 
-# Updated server code modifications:
 def load_model(model_name: str = "mlx-community/gemma-3-4b-it-8bit"):
     """Load the model and tokenizer."""
     global model, tokenizer, cmu_dict
@@ -334,11 +137,6 @@ def get_syllable_processor(syllable_count: int):
     return syllable_processors[syllable_count]
 
 
-def get_auto_detecting_processor(manual_use_filter: bool = False, manual_syllable_count: int = 2):
-    """Create a new auto-detecting processor for each generation request."""
-    return AutoDetectingSyllableProcessor(
-        tokenizer, cmu_dict, manual_use_filter, manual_syllable_count
-    )
 
 
 async def inference_generator(
@@ -347,7 +145,7 @@ async def inference_generator(
     use_syllable_filter: bool = False,
     syllable_count: int = 2,
 ):
-    """Generate tokens with auto-detection and full KV caching."""
+    """Generate tokens with optional syllable filtering and full KV caching."""
 
     # Apply chat template
     messages = prompt
@@ -357,10 +155,11 @@ async def inference_generator(
     )
     print(f"Formatted prompt: {formatted_prompt}")
 
-    # Create the auto-detecting logits processor
-    auto_processor = get_auto_detecting_processor(use_syllable_filter, syllable_count)
+    logits_processors = []
+    if use_syllable_filter:
+        logits_processors.append(get_syllable_processor(syllable_count))
 
-    print("Starting generation with auto-detection...")
+    print("Starting generation...")
 
     # Single stream_generate call with full KV caching
     for response in mlx_lm.stream_generate(
@@ -368,7 +167,7 @@ async def inference_generator(
         tokenizer=tokenizer,
         prompt=formatted_prompt,
         max_tokens=max_tokens,
-        logits_processors=[auto_processor],
+        logits_processors=logits_processors,
     ):
         yield response.text
         # Allow other async tasks to run
